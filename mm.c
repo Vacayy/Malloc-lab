@@ -60,9 +60,6 @@ bp(block ptr)가 주어지면 header, footer의 주소를 계산
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE((char *)(bp) - WSIZE)) // BLocK Pointer
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE))
 
-#define GET_SUCC(bp) (*(void **)((char *)(bp) + WSIZE)) // 다음 가용 블록의 주소
-#define GET_PRED(bp) (*(void **)(bp))                   // 이전 가용 블록의 주소
-
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
 static void *find_fit(size_t a_size);
@@ -70,8 +67,7 @@ static void place(void *bp, size_t a_size);
 
 /* heap_listp는 프롤로그 블록 바로 다음에 위치하는 첫 번째 가용 블록을 가리킨다. 
 init된 직후에는 heap의 시작 부분을 가리킨다. */
-static void *heap_listp; 
-
+static void *heap_listp;
 static void *prev_bp;
 
 /* mm_init creates a heap with an initial free block */
@@ -88,7 +84,7 @@ int mm_init(void)
     PUT(heap_listp + (3*WSIZE), PACK(0, 1)); /* 에필로그 header */
     heap_listp += (2*WSIZE);
 
-    // prev_bp = heap_listp;
+    prev_bp = heap_listp;
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL){
@@ -115,9 +111,12 @@ static void *extend_heap(size_t words){
     PUT(FTRP(bp), PACK(size, 0)); /* Free block footer */
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* new epilogue header */
 
+    prev_bp = bp;
+
     /* Coalesce if the previous block was free */
     return coalesce(bp);
 }
+
 
 /* mm_malloc - brk 포인터를 증가시켜 블록을 할당.
 항상 크기가 alignment의 배수인 블록을 할당한다. */
@@ -148,8 +147,8 @@ void *mm_malloc(size_t size)
 
     /* No fit found. 추가 메모리 할당 및 블록 배치 */
 
-    // extendsize = MAX(asize, CHUNKSIZE);
-    extendsize = asize;
+    extendsize = MAX(asize, CHUNKSIZE);
+    // extendsize = asize;
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL){
         return NULL;
     }
@@ -158,29 +157,13 @@ void *mm_malloc(size_t size)
 }
 
 
-// static void *find_fit(size_t asize)
-// {
-//     /* First-fit search */
-//     void *bp;
-//     // 에필로그 헤더를 만날 때까지 옆 블록으로 이동하면서 순회
-//     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)){
-//         // 할당되지 않았고, asize보다 크다면
-//         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))){ 
-//             return bp;
-//         }
-//     }
-//     return NULL; /* No fit */
-// } 
-
 /* next fit */
 static void *find_fit(size_t asize)
 {
     void *bp;
-
-    // HDRP(PREV_BLKP(bp))
     
     /* prev_bp 부터 에필로그 헤더까지 탐색 */
-    for (bp = prev_bp; GET_SIZE(HDRP(prev_bp)) > 0; bp = NEXT_BLKP(bp)){
+    for (bp = prev_bp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)){
         /* 할당되지 않았고, asize보다 크다면 */
         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))){ 
             prev_bp = bp;
@@ -241,9 +224,16 @@ static void *coalesce(void *bp)
         return bp;
     } 
     else if (prev_alloc && !next_alloc){        /* Case 2. 다음 블록 free */
+        void *old_bp = NEXT_BLKP(bp);
+        
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
+
+        // prev_bp 지점과 겹쳤을 경우 처리         
+        if (old_bp == prev_bp){ 
+            prev_bp = bp;
+        }        
     }
     else if (!prev_alloc && next_alloc){        /* Case 3. 이전 블록 free */
         void *old_bp = bp;
@@ -252,19 +242,26 @@ static void *coalesce(void *bp)
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
         bp = PREV_BLKP(bp);
-        if (old_bp == prev_bp){ // next-fit 시작 지점일 경우 처리
+        
+        // prev_bp 지점과 겹쳤을 경우 처리 
+        if (old_bp == prev_bp){ 
             prev_bp = bp;
-        }
+        }        
+        
     }
     else {                                      /* Case 4. 이전 & 다음 free */
-        void *old_bp = bp;
+        void *old_bp1 = bp;
+        void *old_bp2 = NEXT_BLKP(bp);
+
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));        
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
-        if (old_bp == prev_bp){ // next-fit 시작 지점일 경우 처리
+        
+        // prev_bp 지점과 겹쳤을 경우 처리 
+        if (old_bp1 == prev_bp | old_bp2 == prev_bp){ 
             prev_bp = bp;
-        }
+        }        
     }
     return bp;
 }
@@ -282,10 +279,13 @@ void *mm_realloc(void *ptr, size_t size)
     newptr = mm_malloc(size);
     if (newptr == NULL)
       return NULL;
-    copySize = GET_SIZE(HDRP(oldptr));
-    // copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    
+    // copySize = GET_SIZE(HDRP(oldptr));
+    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    
     if (size < copySize)
       copySize = size;
+
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
     return newptr;
