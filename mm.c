@@ -41,14 +41,18 @@ team_t team = {
 많은 시스템에서 페이지 크기는 4kb. 힙 확장은 일반적으로 페이지 크기의 배수로 확장함. */
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MIN(x, y) ((x) > (y) ? (y) : (x))
 
 #define PACK(size, alloc) ((size) | (alloc))        /* 헤더에 넣을 정보 생성 (만약 size=16byte, 할당되었다면 PACK(16,1) = 17) */ 
 #define GET(p) (*(unsigned int *)(p))               /* 주소 p에 접근하여 워드를 read, write */
 #define PUT(p, val) (*(unsigned int *)(p) = (val))
-#define GET_SIZE(p) (GET(p) & ~0x7)                 /* 주소 p에 접근하여 size, allocated fields 읽기 */
+#define GET_SIZE(p) (GET(p) & ~0x7)                 /* 주소 p에 접근하여 size, allocated fields 읽기. ~는 비트 뒤집어주는 문법 */
 #define GET_ALLOC(p) (GET(p) & 0x1)
 
-/* bp(block ptr)가 주어지면 header, footer의 주소를 계산 */
+/* 
+bp(block ptr)가 주어지면 header, footer의 주소를 계산 
+(bp를 char 타입으로 캐스팅하는 이유는 1 byte 단위로 계산하기 위해서)
+*/
 #define HDRP(bp) ((char *)(bp) - WSIZE) // HeaDeR Pointer
 #define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE) // FooTeR Pointer
 
@@ -56,6 +60,8 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE((char *)(bp) - WSIZE)) // BLocK Pointer
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE))
 
+#define GET_SUCC(bp) (*(void **)((char *)(bp) + WSIZE)) // 다음 가용 블록의 주소
+#define GET_PRED(bp) (*(void **)(bp))                   // 이전 가용 블록의 주소
 
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
@@ -64,7 +70,10 @@ static void place(void *bp, size_t a_size);
 
 /* heap_listp는 프롤로그 블록 바로 다음에 위치하는 첫 번째 가용 블록을 가리킨다. 
 init된 직후에는 heap의 시작 부분을 가리킨다. */
-static char *heap_listp; 
+static void *heap_listp; 
+
+static void *prev_bp;
+
 /* mm_init creates a heap with an initial free block */
 int mm_init(void)
 {
@@ -76,8 +85,10 @@ int mm_init(void)
     PUT(heap_listp, 0); /* 정렬 패딩 */
     PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1)); /* 프롤로그 header */
     PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1)); /* 프롤로그 footer */
-    PUT(heap_listp + (3*WSIZE), PACK(0, 1)); /* 에필로그 header                      */
+    PUT(heap_listp + (3*WSIZE), PACK(0, 1)); /* 에필로그 header */
     heap_listp += (2*WSIZE);
+
+    // prev_bp = heap_listp;
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL){
@@ -86,6 +97,7 @@ int mm_init(void)
     
     return 0;
 }
+
 
 /* extend_heap() extends the heap with a new free block */
 static void *extend_heap(size_t words){
@@ -135,6 +147,7 @@ void *mm_malloc(size_t size)
     }
 
     /* No fit found. 추가 메모리 할당 및 블록 배치 */
+
     // extendsize = MAX(asize, CHUNKSIZE);
     extendsize = asize;
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL){
@@ -145,17 +158,44 @@ void *mm_malloc(size_t size)
 }
 
 
+// static void *find_fit(size_t asize)
+// {
+//     /* First-fit search */
+//     void *bp;
+//     // 에필로그 헤더를 만날 때까지 옆 블록으로 이동하면서 순회
+//     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)){
+//         // 할당되지 않았고, asize보다 크다면
+//         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))){ 
+//             return bp;
+//         }
+//     }
+//     return NULL; /* No fit */
+// } 
+
+/* next fit */
 static void *find_fit(size_t asize)
 {
-    /* First-fit search */
     void *bp;
-    // 에필로그 헤더를 만날 때까지 옆 블록으로 이동하면서 순회
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)){
-        // 할당되지 않았고, asize보다 크다면
+
+    // HDRP(PREV_BLKP(bp))
+    
+    /* prev_bp 부터 에필로그 헤더까지 탐색 */
+    for (bp = prev_bp; GET_SIZE(HDRP(prev_bp)) > 0; bp = NEXT_BLKP(bp)){
+        /* 할당되지 않았고, asize보다 크다면 */
         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))){ 
+            prev_bp = bp;
             return bp;
         }
     }
+
+    /* 처음부터 prev_bp까지 탐색 */
+    for (bp = heap_listp; bp < prev_bp; bp = NEXT_BLKP(bp)) {
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+            prev_bp = bp;
+            return bp;
+        }
+    }
+
     return NULL; /* No fit */
 }
 
@@ -206,16 +246,25 @@ static void *coalesce(void *bp)
         PUT(FTRP(bp), PACK(size, 0));
     }
     else if (!prev_alloc && next_alloc){        /* Case 3. 이전 블록 free */
+        void *old_bp = bp;
+
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-        PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
         bp = PREV_BLKP(bp);
+        if (old_bp == prev_bp){ // next-fit 시작 지점일 경우 처리
+            prev_bp = bp;
+        }
     }
     else {                                      /* Case 4. 이전 & 다음 free */
+        void *old_bp = bp;
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));        
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
+        if (old_bp == prev_bp){ // next-fit 시작 지점일 경우 처리
+            prev_bp = bp;
+        }
     }
     return bp;
 }
